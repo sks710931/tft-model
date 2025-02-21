@@ -1,0 +1,10 @@
+pandas
+numpy==1.24.0
+scikit-learn
+matplotlib
+ta
+torch==2.2.2
+pytorch-lightning==2.5.0.post0 
+torchmetrics==1.6.1 
+pytorch-forecasting==1.3.0
+tensorboard==2.16.2
