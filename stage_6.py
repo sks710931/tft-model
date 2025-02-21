@@ -1,6 +1,5 @@
 import os
 import re
-import random
 import pandas as pd
 import torch
 import pytorch_lightning as pl
@@ -13,62 +12,60 @@ from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.models.temporal_fusion_transformer import TemporalFusionTransformer
 from pytorch_forecasting.metrics import Metric
 
-# ------------------ Constants & Settings ------------------ #
+# Configuration constants
 INPUT_DIR = "data/walk_forward_splits_gap"
 OUTPUT_RESULTS = "data/walk_forward_transfer_results.csv"
 MODEL_SAVE_DIR = "models/walk_forward_transfer"
 
-HIDDEN_SIZE_OPTIONS = [32, 64]
+HIDDEN_SIZE_OPTIONS = [64, 128]
 DROPOUT_OPTIONS = [0.1, 0.2]
 LEARNING_RATE_OPTIONS = [1e-3, 5e-4]
 
-MAX_ENCODER_LENGTH = 60
+MAX_ENCODER_LENGTH = 20  # 1 hour
 MAX_PREDICTION_LENGTH = 1
-
-BATCH_SIZE = 64
+BATCH_SIZE = 256
 EPOCHS = 10
-NUM_SAMPLES_WINDOW0 = 8  # Set to 8 to test all combinations
+NUM_SAMPLES_WINDOW0 = 8
 
 MIN_TRAIN_SIZE = 5000
 MIN_VAL_SIZE = 1000
 MIN_TEST_SIZE = 500
 
-# ------------------ Custom BCE Loss as Metric ------------------ #
-class BCEWithLogitsMetric(Metric):
+# Custom metric for cross-entropy loss
+class CrossEntropyMetric(Metric):
     def __init__(self):
-        super().__init__(name="bcewithlogits")
+        super().__init__()
         self.add_state("y_pred", default=[], dist_reduce_fx="cat")
         self.add_state("y_true", default=[], dist_reduce_fx="cat")
 
     def update(self, y_pred, y_true):
-        pred_tensor = y_pred.prediction if hasattr(y_pred, "prediction") else y_pred
-        self.y_pred.append(pred_tensor.view(-1))
-        self.y_true.append(y_true.view(-1).float())
+        # y_pred: [batch_size, num_classes], y_true: [batch_size]
+        self.y_pred.append(y_pred)
+        self.y_true.append(y_true)
 
     def compute(self):
-        y_pred = torch.cat(self.y_pred)
-        y_true = torch.cat(self.y_true)
-        return F.binary_cross_entropy_with_logits(y_pred, y_true)
+        y_pred = torch.cat(self.y_pred)  # [total_samples, num_classes]
+        y_true = torch.cat(self.y_true)  # [total_samples]
+        return F.cross_entropy(y_pred, y_true)
 
     def loss(self, y_pred, y_true):
-        pred_tensor = y_pred.prediction if hasattr(y_pred, "prediction") else y_pred
-        return F.binary_cross_entropy_with_logits(pred_tensor.view(-1), y_true.view(-1))
+        class_weights = torch.tensor([2.0, 2.0, 0.5], device=y_pred.device)
+        return F.cross_entropy(y_pred, y_true, weight=class_weights)
 
     def to_prediction(self, y_pred, **kwargs):
-        pred_tensor = y_pred.prediction if hasattr(y_pred, "prediction") else y_pred
-        return torch.sigmoid(pred_tensor)
+        return torch.argmax(y_pred, dim=-1)
 
-# ------------------ Custom TFT Class ------------------ #
+# Custom TFT model class
 class CustomTFT(pl.LightningModule):
-    def __init__(self, dataset, hidden_size, dropout, learning_rate, output_size=1, log_interval=50):
+    def __init__(self, dataset, hidden_size, dropout, learning_rate, output_size=3, log_interval=50):
         super().__init__()
-        self.save_hyperparameters()  # Save all constructor arguments
+        self.save_hyperparameters(ignore=['dataset'])
         self.tft = TemporalFusionTransformer.from_dataset(
             dataset,
             hidden_size=hidden_size,
             dropout=dropout,
             output_size=output_size,
-            loss=BCEWithLogitsMetric(),
+            loss=CrossEntropyMetric(),
             log_interval=log_interval
         )
         self.learning_rate = learning_rate
@@ -78,27 +75,24 @@ class CustomTFT(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        y_true = y[0] if isinstance(y, tuple) else y
-        y_hat = self(x)
-        loss = self.tft.loss(y_hat, y_true)
-        batch_size = y_true.size(0)
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()  # [batch_size]
+        y_hat = self(x)  # Output object
+        prediction = y_hat.prediction.squeeze(1)  # [batch_size, num_classes]
+        loss = self.tft.loss(prediction, y_true)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=BATCH_SIZE)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        y_true = y[0] if isinstance(y, tuple) else y
+        y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()
         y_hat = self(x)
-        loss = self.tft.loss(y_hat, y_true)
-        batch_size = y_true.size(0)
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True, batch_size=batch_size)
+        prediction = y_hat.prediction.squeeze(1)
+        loss = self.tft.loss(prediction, y_true)
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True, batch_size=BATCH_SIZE)
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
-            self.parameters(),
-            lr=self.learning_rate
-        )
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.8)
         return [optimizer], [scheduler]
 
@@ -110,24 +104,17 @@ class CustomTFT(pl.LightningModule):
         model.load_state_dict(checkpoint["state_dict"])
         return model
 
-# ------------------ Create TimeSeriesDataSet ------------------ #
+# Function to create TimeSeriesDataSet
 def create_tsdataset(df):
-    if "timestamp" not in df.columns or "label" not in df.columns:
-        raise ValueError("DataFrame must contain 'timestamp' and 'label' columns")
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
     df["time_idx"] = df.index
-    if "dummy_id" not in df.columns:
-        df["dummy_id"] = 0
-
-    known_reals = [
-        "open", "high", "low", "close", "volume",
-        "ma_5", "ma_15", "ma_30", "ma_60",
-        "atr_14", "rsi_14", "adx",
-        "hour_sin", "hour_cos", "min_sin", "min_cos",
-        "dow_sin", "dow_cos", "market_regime",
-    ]
+    df["dummy_id"] = 0
+    
+    known_reals = ["open", "high", "low", "close", "volume", "ma_5", "ma_15", "ma_30", "ma_60", "ma_120",
+                   "atr_14", "atr_60", "rsi_14", "adx", "hour_sin", "hour_cos", "min_sin", "min_cos",
+                   "dow_sin", "dow_cos", "market_regime", "volatility_spike", "price_diff_60"]
     known_reals = [c for c in known_reals if c in df.columns]
-
+    
     return TimeSeriesDataSet(
         df,
         time_idx="time_idx",
@@ -138,22 +125,21 @@ def create_tsdataset(df):
         time_varying_known_reals=known_reals,
         time_varying_unknown_reals=[],
         allow_missing_timesteps=False,
-        target_normalizer=None,
+        target_normalizer=None
     )
 
-# ------------------ Classification Metrics ------------------ #
+# Classification metrics calculator
 class ClassificationMetrics(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=3):
         super().__init__()
-        self.accuracy = Accuracy(task="binary")
-        self.precision = Precision(task="binary")
-        self.recall = Recall(task="binary")
-        self.f1 = F1Score(task="binary")
+        self.accuracy = Accuracy(task="multiclass", num_classes=num_classes)
+        self.precision = Precision(task="multiclass", num_classes=num_classes, average="macro")
+        self.recall = Recall(task="multiclass", num_classes=num_classes, average="macro")
+        self.f1 = F1Score(task="multiclass", num_classes=num_classes, average="macro")
 
     def forward(self, y_pred_logits, y_true):
-        probs = torch.sigmoid(y_pred_logits.view(-1))
-        preds = (probs >= 0.5).float()
-        y_true = y_true.view(-1)
+        preds = torch.argmax(y_pred_logits, dim=-1)
+        y_true = y_true.squeeze()
         return {
             "acc": self.accuracy(preds, y_true).item(),
             "precision": self.precision(preds, y_true).item(),
@@ -161,66 +147,78 @@ class ClassificationMetrics(nn.Module):
             "f1": self.f1(preds, y_true).item()
         }
 
-# ------------------ Dynamic TP/SL for PnL Simulation ------------------ #
-def simulate_pnl(df_rows, probs, tp_factor=1.5, sl_factor=1.0):
-    preds = (probs >= 0.5).astype(int)
-    if "close" not in df_rows.columns or "atr_14" not in df_rows.columns:
+# PnL simulation function
+def simulate_pnl(df_rows, preds, tp_factor=0.005, sl_factor=0.002, fee=0.001):
+    if "close" not in df_rows.columns:
         return {"total_pnl": None, "num_trades": 0, "avg_pnl_per_trade": None}
     closes = df_rows["close"].values
-    atrs = df_rows["atr_14"].values
     gains = []
+    num_trades = 0
+    
     for i, pred in enumerate(preds):
-        if i >= len(closes) - 1:
+        if i >= len(closes) - 1 or pred == 2:
             gains.append(0.0)
             continue
-        if pred == 1:
-            atr_now = atrs[i]
-            tp_price = closes[i] + atr_now * tp_factor
-            sl_price = closes[i] - atr_now * sl_factor
-            future_prices = closes[i+1 : min(i+6, len(closes))]
+        entry_price = closes[i]
+        if pred == 1:  # Long
+            tp_price = entry_price * (1 + tp_factor)
+            sl_price = entry_price * (1 - sl_factor)
+            future_prices = closes[i+1 : min(i+21, len(closes))]
             hit_tp = any(p >= tp_price for p in future_prices)
             hit_sl = any(p <= sl_price for p in future_prices)
             if hit_tp:
-                gain = (tp_price - closes[i]) / closes[i]
+                gain = (tp_price - entry_price) / entry_price - 2 * fee
                 gains.append(gain)
             elif hit_sl:
-                gain = (sl_price - closes[i]) / closes[i]
+                gain = (sl_price - entry_price) / entry_price - 2 * fee
                 gains.append(gain)
             else:
-                gains.append(0.0)
-        else:
-            gains.append(0.0)
+                gains.append(-2 * fee)
+            num_trades += 1
+        elif pred == 0:  # Short
+            tp_price = entry_price * (1 - tp_factor)
+            sl_price = entry_price * (1 + sl_factor)
+            future_prices = closes[i+1 : min(i+21, len(closes))]
+            hit_tp = any(p <= tp_price for p in future_prices)
+            hit_sl = any(p >= sl_price for p in future_prices)
+            if hit_tp:
+                gain = (entry_price - tp_price) / entry_price - 2 * fee
+                gains.append(gain)
+            elif hit_sl:
+                gain = (entry_price - sl_price) / entry_price - 2 * fee
+                gains.append(gain)
+            else:
+                gains.append(-2 * fee)
+            num_trades += 1
+    
     total_pnl = sum(gains)
-    num_trades = sum(preds)
     avg_pnl = total_pnl / num_trades if num_trades > 0 else 0.0
     return {"total_pnl": total_pnl, "num_trades": num_trades, "avg_pnl_per_trade": avg_pnl}
 
-# ------------------ Evaluate Model ------------------ #
+# Model evaluation function
 def evaluate_model(model, df_test):
     if len(df_test) == 0:
         return {"acc": None, "precision": None, "recall": None, "f1": None,
                 "total_pnl": None, "num_trades": 0, "avg_pnl_per_trade": None}
     test_dataset = create_tsdataset(df_test)
     test_loader = test_dataset.to_dataloader(train=False, batch_size=BATCH_SIZE, num_workers=12)
-    metrics_fn = ClassificationMetrics()
+    metrics_fn = ClassificationMetrics(num_classes=3)
     all_preds, all_targets = [], []
     model.eval()
     with torch.no_grad():
         for batch in test_loader:
             x, y = batch
-            y_true = y[0] if isinstance(y, tuple) else y
+            y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()
             y_hat = model(x)
-            pred_tensor = y_hat.prediction if hasattr(y_hat, "prediction") else y_hat
-            if isinstance(pred_tensor, tuple):
-                pred_tensor = pred_tensor[0]  # Extract first tensor if tuple
-            all_preds.append(pred_tensor.view(-1))
-            all_targets.append(y_true.view(-1).float())
+            pred_tensor = y_hat.prediction.squeeze(1)  # [batch_size, num_classes]
+            all_preds.append(pred_tensor)
+            all_targets.append(y_true)
     y_pred_logits = torch.cat(all_preds, dim=0)
     y_true = torch.cat(all_targets, dim=0)
     cls_stats = metrics_fn(y_pred_logits, y_true)
-    probs = torch.sigmoid(y_pred_logits).cpu().numpy()
-    df_test_rows = df_test.iloc[-len(probs):].copy()
-    pnl_stats = simulate_pnl(df_test_rows, probs)
+    preds = torch.argmax(y_pred_logits, dim=-1).cpu().numpy()
+    df_test_rows = df_test.iloc[-len(preds):].copy()
+    pnl_stats = simulate_pnl(df_test_rows, preds)
     return {
         "acc": cls_stats["acc"],
         "precision": cls_stats["precision"],
@@ -231,19 +229,14 @@ def evaluate_model(model, df_test):
         "avg_pnl_per_trade": pnl_stats["avg_pnl_per_trade"],
     }
 
-# ------------------ Hyperparam Search on First Window ------------------ #
+# Hyperparameter search for the first window
 def hyperparam_search_first_window(df_train, df_val, window_index, n_samples):
     combos = [
-        {"hidden_size": 32, "dropout": 0.1, "learning_rate": 0.0005},
-        {"hidden_size": 32, "dropout": 0.1, "learning_rate": 0.001},
-        {"hidden_size": 32, "dropout": 0.2, "learning_rate": 0.0005},
-        {"hidden_size": 32, "dropout": 0.2, "learning_rate": 0.001},
-        {"hidden_size": 64, "dropout": 0.1, "learning_rate": 0.0005},
-        {"hidden_size": 64, "dropout": 0.1, "learning_rate": 0.001},
-        {"hidden_size": 64, "dropout": 0.2, "learning_rate": 0.0005},
-        {"hidden_size": 64, "dropout": 0.2, "learning_rate": 0.001}
+        {"hidden_size": hs, "dropout": dr, "learning_rate": lr}
+        for hs in HIDDEN_SIZE_OPTIONS
+        for dr in DROPOUT_OPTIONS
+        for lr in LEARNING_RATE_OPTIONS
     ]
-    # Use all combos or limit to n_samples if fewer are desired
     combos = combos[:n_samples] if n_samples < len(combos) else combos
     best_val_loss = float("inf")
     best_model = None
@@ -259,41 +252,31 @@ def hyperparam_search_first_window(df_train, df_val, window_index, n_samples):
             hidden_size=combo["hidden_size"],
             dropout=combo["dropout"],
             learning_rate=combo["learning_rate"],
-            output_size=1,
+            output_size=3,
             log_interval=50
         )
         logger = TensorBoardLogger(save_dir="logs", name=f"window_{window_index}_combo_{i}")
         ckpt_dir = os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_combo_{i}")
-        ckpt_cb = ModelCheckpoint(
-            dirpath=ckpt_dir,
-            filename="best-{epoch}-{val_loss:.4f}",
-            monitor="val_loss",
-            save_top_k=1,
-            mode="min"
-        )
-        es_cb = EarlyStopping(monitor="val_loss", patience=2, mode="min")
+        ckpt_cb = ModelCheckpoint(dirpath=ckpt_dir, filename="best-{epoch}-{val_loss:.4f}", monitor="val_loss", save_top_k=1, mode="min")
+        es_cb = EarlyStopping(monitor="val_loss", patience=3, mode="min")
         trainer = pl.Trainer(
             max_epochs=EPOCHS,
             logger=logger,
             callbacks=[ckpt_cb, es_cb],
             accelerator="auto",
-            enable_progress_bar=False
+            enable_progress_bar=True
         )
         trainer.fit(tft, train_loader, val_loader)
-        val_loss = trainer.callback_metrics.get("val_loss", float("inf"))
-        if isinstance(val_loss, torch.Tensor):
-            val_loss = val_loss.item()
-        print(f"Completed Combo {i+1}/{len(combos)}, val_loss={val_loss:.4f}")
+        val_loss = trainer.callback_metrics.get("val_loss", float("inf")).item()
+        print(f"Combo {i+1}/{len(combos)}, val_loss={val_loss:.4f}")
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_params = combo
-            best_ckpt_path = ckpt_cb.best_model_path
-            if best_ckpt_path:
-                best_model = CustomTFT.load_from_checkpoint(best_ckpt_path)
-    print(f"First window best combo = {best_params}, val_loss={best_val_loss:.4f}")
+            best_model = CustomTFT.load_from_checkpoint(ckpt_cb.best_model_path)
+    print(f"Best combo = {best_params}, val_loss={best_val_loss:.4f}")
     return best_model, best_params, best_val_loss
 
-# ------------------ Fine-Tune Model for Subsequent Windows ------------------ #
+# Fine-tuning function for subsequent windows
 def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
     train_dataset = create_tsdataset(df_train)
     tft = CustomTFT(
@@ -301,7 +284,7 @@ def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
         hidden_size=hyperparams["hidden_size"],
         dropout=hyperparams["dropout"],
         learning_rate=hyperparams["learning_rate"],
-        output_size=1,
+        output_size=3,
         log_interval=50
     )
     tft.load_state_dict(prev_model.state_dict())
@@ -312,34 +295,23 @@ def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
     train_loader = train_dataset.to_dataloader(train=True, batch_size=BATCH_SIZE, num_workers=12)
     val_loader = val_dataset.to_dataloader(train=False, batch_size=BATCH_SIZE, num_workers=12)
     logger = TensorBoardLogger(save_dir="logs", name=f"window_{window_index}_fine_tune")
-    ckpt_cb = ModelCheckpoint(
-        dirpath=os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_fine_tune"),
-        filename="best-{epoch}-{val_loss:.4f}",
-        monitor="val_loss",
-        save_top_k=1,
-        mode="min"
-    )
-    es_cb = EarlyStopping(monitor="val_loss", patience=2, mode="min")
+    ckpt_cb = ModelCheckpoint(dirpath=os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_fine_tune"), filename="best-{epoch}-{val_loss:.4f}", monitor="val_loss", save_top_k=1, mode="min")
+    es_cb = EarlyStopping(monitor="val_loss", patience=3, mode="min")
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
         logger=logger,
         callbacks=[ckpt_cb, es_cb],
         accelerator="auto",
-        enable_progress_bar=False
+        enable_progress_bar=True
     )
     trainer.fit(tft, train_loader, val_loader)
-    val_loss = trainer.callback_metrics.get("val_loss", float("inf"))
-    if isinstance(val_loss, torch.Tensor):
-        val_loss = val_loss.item()
-    best_ckpt_path = ckpt_cb.best_model_path
-    best_model = tft
-    if best_ckpt_path:
-        best_model = CustomTFT.load_from_checkpoint(best_ckpt_path)
+    val_loss = trainer.callback_metrics.get("val_loss", float("inf")).item()
+    best_model = CustomTFT.load_from_checkpoint(ckpt_cb.best_model_path)
     return best_model, val_loss
 
-# ------------------ Main Walk-Forward Pipeline ------------------ #
+# Main execution function
 def main():
-    print("=== Stage 5: Walk-Forward with Transfer Learning + BCEWithLogitsMetric ===")
+    print("=== Stage 6: Walk-Forward Training for HFT (0.5% TP, 0.2% SL, 1-Hour Horizon) ===")
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     results = []
     all_files = os.listdir(INPUT_DIR)
@@ -347,6 +319,7 @@ def main():
     train_files = sorted([f for f in all_files if pattern.match(f)], key=lambda x: int(pattern.match(x).group(1)))
     prev_model = None
     prev_hparams = None
+    
     for idx, train_file in enumerate(train_files):
         window_index = int(pattern.match(train_file).group(1))
         val_file = f"val_{window_index}.csv"
@@ -354,36 +327,34 @@ def main():
         path_train = os.path.join(INPUT_DIR, train_file)
         path_val = os.path.join(INPUT_DIR, val_file)
         path_test = os.path.join(INPUT_DIR, test_file)
+        
         if not (os.path.exists(path_val) and os.path.exists(path_test)):
-            print(f"Window {window_index}: missing val or test file, skipping.")
+            print(f"Window {window_index}: missing val/test file, skipping.")
             continue
-        try:
-            df_train = pd.read_csv(path_train, parse_dates=["timestamp"])
-            df_val = pd.read_csv(path_val, parse_dates=["timestamp"])
-            df_test = pd.read_csv(path_test, parse_dates=["timestamp"])
-        except Exception as e:
-            print(f"Error reading files for window {window_index}: {e}")
-            continue
+        
+        df_train = pd.read_csv(path_train, parse_dates=["timestamp"])
+        df_val = pd.read_csv(path_val, parse_dates=["timestamp"])
+        df_test = pd.read_csv(path_test, parse_dates=["timestamp"])
+        
         if len(df_train) < MIN_TRAIN_SIZE or len(df_val) < MIN_VAL_SIZE or len(df_test) < MIN_TEST_SIZE:
             print(f"Skipping window {window_index}: insufficient data.")
             continue
+        
         print(f"\n=== Window {window_index} ===")
         if idx == 0:
-            best_model, best_hparams, best_val_loss = hyperparam_search_first_window(
-                df_train, df_val, window_index, NUM_SAMPLES_WINDOW0
-            )
+            best_model, best_hparams, best_val_loss = hyperparam_search_first_window(df_train, df_val, window_index, NUM_SAMPLES_WINDOW0)
             if best_model is None:
-                print("No best model found for first window, aborting.")
+                print("No best model found, aborting.")
                 return
             prev_model = best_model
             prev_hparams = best_hparams
         else:
-            best_model, best_val_loss = fine_tune_model(
-                prev_model, df_train, df_val, prev_hparams, window_index
-            )
+            best_model, best_val_loss = fine_tune_model(prev_model, df_train, df_val, prev_hparams, window_index)
             prev_model = best_model
+        
         test_metrics = evaluate_model(best_model, df_test)
         print(f"Window {window_index} => val_loss={best_val_loss:.4f}, test_metrics={test_metrics}")
+        
         row = {
             "window_index": window_index,
             "train_start": df_train["timestamp"].min(),
@@ -408,11 +379,11 @@ def main():
             "avg_pnl_per_trade": test_metrics["avg_pnl_per_trade"],
         }
         results.append(row)
+    
     df_results = pd.DataFrame(results)
     df_results.to_csv(OUTPUT_RESULTS, index=False)
-    print(f"\nWalk-forward transfer learning results saved to {OUTPUT_RESULTS}")
+    print(f"\nResults saved to {OUTPUT_RESULTS}")
     print(df_results)
-    print("\n=== Done ===")
 
 if __name__ == "__main__":
     main()
