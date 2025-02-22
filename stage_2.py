@@ -1,3 +1,4 @@
+# stage_2.py
 import pandas as pd
 import numpy as np
 import ta
@@ -31,7 +32,7 @@ def add_technical_indicators(df):
     stoch = ta.momentum.StochasticOscillator(high=df["high"], low=df["low"], close=df["close"], window=14, smooth_window=3)
     df["stoch_k"] = stoch.stoch()
     
-    # ATR
+    # ATR (for labeling and features)
     df["atr_14"] = ta.volatility.average_true_range(high=df["high"], low=df["low"], close=df["close"], window=14)
     df["atr_60"] = ta.volatility.average_true_range(high=df["high"], low=df["low"], close=df["close"], window=60)
     
@@ -53,6 +54,19 @@ def add_technical_indicators(df):
     # Volatility Spike
     df["volatility_spike"] = (df["atr_14"] / df["atr_14"].rolling(window=60).mean()) > 1.5
     
+    # Additional Indicators
+    cci = ta.trend.CCIIndicator(high=df["high"], low=df["low"], close=df["close"], window=20)
+    df["cci_20"] = cci.cci()
+
+    willr = ta.momentum.WilliamsRIndicator(high=df["high"], low=df["low"], close=df["close"], lbp=14)
+    df["willr_14"] = willr.williams_r()
+
+    df["rsi_14_lag5"] = df["rsi_14"].shift(5)  # RSI from 15 minutes ago
+    
+    # Normalize numeric features
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    df[numeric_cols] = (df[numeric_cols] - df[numeric_cols].mean()) / df[numeric_cols].std()
+
     print("Feature addition completed ✅")
     return df
 
@@ -80,7 +94,7 @@ def tag_market_regime(df):
 def main():
     df = pd.read_csv(CLEANED_DATA_PATH, parse_dates=["timestamp"])
     print(f"Original dataset loaded: {df.shape[0]} rows")
-    df["volume"] = df["volume"].replace(0, 1e-8)
+    df["volume"] = df["volume"].replace(0, 1e-8)  # Avoid division by zero
     df.ffill(inplace=True)
     df.dropna(inplace=True)
     

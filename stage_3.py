@@ -1,77 +1,59 @@
+# stage_3.py
 import pandas as pd
 import numpy as np
 from collections import Counter
 
+# File paths
 ENGINEERED_DATA_PATH = "data/engineered.csv"
 LABELED_DATA_PATH = "data/labeled_dynamic.csv"
 
-FUTURE_HORIZON = 20   # 1 hour (20 * 3 minutes)
-TP_PERCENT = 0.005    # 0.5% TP
-SL_PERCENT = 0.002    # 0.2% SL
-SLIPPAGE_OFFSET = 0.0005  # 0.05% slippage
+# Configuration constants
+FUTURE_HORIZON = 20   # 1 hour (20 * 3-minute bars)
+ENTRY_FEE = 0.001     # 0.1% entry fee
+EXIT_FEE = 0.001      # 0.1% exit fee
+TOTAL_FEE = ENTRY_FEE + EXIT_FEE  # 0.2% total fee
+PROFIT_MARGIN = 0.002  # 0.2% desired profit margin (reduced from 0.3%)
+MOVEMENT_THRESHOLD = TOTAL_FEE + PROFIT_MARGIN  # 0.4% total threshold
 
 def main():
-    print("=== Stage 3: Labeling for HFT (0.5% TP, 0.2% SL, 1-Hour Horizon) ===")
+    print("=== Stage 3: Labeling for HFT (Fee-Aware Direction-Based, 1-Hour Horizon) ===")
+    
+    # Load the engineered dataset
     df = pd.read_csv(ENGINEERED_DATA_PATH, parse_dates=["timestamp"])
     initial_rows = len(df)
     print(f"Initial dataset size: {initial_rows} rows")
     
+    # Extract closing prices and initialize labels (default: no trade)
     closes = df["close"].values
-    labels = np.full(len(df), fill_value=2, dtype=int)  # Default to "no trade" (2)
+    labels = np.full(len(df), fill_value=2, dtype=int)  # 2 = no trade
     
-    skip_count = 0
-    long_count = 0
-    short_count = 0
-    
-    # Label for long and short trades
+    # Iterate through the dataset (excluding the last FUTURE_HORIZON rows)
     for i in range(len(df) - FUTURE_HORIZON):
         entry_price = closes[i]
-        
-        # Long trade: +0.5% TP, -0.2% SL
-        long_tp_price = entry_price * (1 + TP_PERCENT) + (entry_price * SLIPPAGE_OFFSET)
-        long_sl_price = entry_price * (1 - SL_PERCENT) - (entry_price * SLIPPAGE_OFFSET)
-        
-        # Short trade: -0.5% TP, +0.2% SL
-        short_tp_price = entry_price * (1 - TP_PERCENT) - (entry_price * SLIPPAGE_OFFSET)
-        short_sl_price = entry_price * (1 + SL_PERCENT) + (entry_price * SLIPPAGE_OFFSET)
-        
         future_window = closes[i+1 : i+1+FUTURE_HORIZON]
         
-        if np.all(future_window == future_window[0]):  # Constant price
-            skip_count += 1
+        if len(future_window) == 0:
             continue
         
-        # Check long trade outcome
-        long_outcome = 2  # Default: no trade
+        # Check for first breach of threshold
         for price in future_window:
-            if price >= long_tp_price:
-                long_outcome = 1  # Long TP hit
+            # Calculate percentage movements
+            up_movement = (price / entry_price - 1) - TOTAL_FEE
+            down_movement = (1 - price / entry_price) - TOTAL_FEE
+            
+            # Assign label based on first direction to meet threshold
+            if up_movement >= PROFIT_MARGIN:
+                labels[i] = 1  # Long trade
                 break
-            elif price <= long_sl_price:
-                long_outcome = 0  # Long SL hit (ignored for short)
+            elif down_movement >= PROFIT_MARGIN:
+                labels[i] = 0  # Short trade
                 break
-        
-        # Check short trade outcome
-        short_outcome = 2  # Default: no trade
-        for price in future_window:
-            if price <= short_tp_price:
-                short_outcome = 0  # Short TP hit
-                break
-            elif price >= short_sl_price:
-                short_outcome = 1  # Short SL hit (ignored for long)
-                break
-        
-        # Assign label: prioritize tradable outcomes
-        if long_outcome == 1:
-            labels[i] = 1  # Long trade
-            long_count += 1
-        elif short_outcome == 0:
-            labels[i] = 0  # Short trade
-            short_count += 1
-        # Else, remains 2 (no trade)
+        else:
+            labels[i] = 2  # No trade if neither threshold is met
     
+    # Add labels to the dataframe and trim rows without a full horizon
     df["label"] = labels
-    df = df.iloc[:-FUTURE_HORIZON].copy()  # Drop rows without full horizon
+    df = df.iloc[:-FUTURE_HORIZON].copy()
     
     # Log label distribution
     label_counts = Counter(df["label"])
@@ -80,13 +62,12 @@ def main():
     print(f"Long trades (1): {label_counts[1]}")
     print(f"No trade (2): {label_counts[2]}")
     
+    # Log final dataset size
     final_rows = len(df)
-    print(f"Skipped constant price rows: {skip_count}")
-    print(f"Long trade rows: {long_count}")
-    print(f"Short trade rows: {short_count}")
     print(f"Final dataset rows: {final_rows}")
     print(f"% Data lost: {100 * (initial_rows - final_rows) / initial_rows:.2f}%")
     
+    # Save the labeled dataset
     df.to_csv(LABELED_DATA_PATH, index=False)
     print(f"[Stage 3] Labeled data saved to {LABELED_DATA_PATH}")
 

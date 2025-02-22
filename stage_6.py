@@ -1,3 +1,4 @@
+# stage_6_optuna.py
 import os
 import re
 import pandas as pd
@@ -11,25 +12,40 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.models.temporal_fusion_transformer import TemporalFusionTransformer
 from pytorch_forecasting.metrics import Metric
+import optuna
+import requests
 
 # Configuration constants
 INPUT_DIR = "data/walk_forward_splits_gap"
-OUTPUT_RESULTS = "data/walk_forward_transfer_results.csv"
-MODEL_SAVE_DIR = "models/walk_forward_transfer"
+OUTPUT_RESULTS = "data/walk_forward_transfer_results_optuna.csv"
+MODEL_SAVE_DIR = "models/walk_forward_transfer_optuna"
+TELEGRAM_BOT_TOKEN = "8179267789:AAFzP6zeQWtPhPfhekTStzqXtW3MIXebPDY"
+TELEGRAM_CHAT_ID = "1159940939"
 
-HIDDEN_SIZE_OPTIONS = [64, 128]
-DROPOUT_OPTIONS = [0.1, 0.2]
-LEARNING_RATE_OPTIONS = [1e-3, 5e-4]
-
+HIDDEN_SIZE_MIN, HIDDEN_SIZE_MAX = 64, 256
+DROPOUT_MIN, DROPOUT_MAX = 0.1, 0.3
+LEARNING_RATE_MIN, LEARNING_RATE_MAX = 1e-4, 1e-2
 MAX_ENCODER_LENGTH = 20  # 1 hour
 MAX_PREDICTION_LENGTH = 1
 BATCH_SIZE = 256
-EPOCHS = 10
-NUM_SAMPLES_WINDOW0 = 8
-
+EPOCHS = 15
+N_TRIALS_WINDOW0 = 10  # Trials for Window 0
 MIN_TRAIN_SIZE = 5000
 MIN_VAL_SIZE = 1000
 MIN_TEST_SIZE = 500
+
+# Telegram notification function
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
 
 # Custom metric for cross-entropy loss
 class CrossEntropyMetric(Metric):
@@ -39,17 +55,16 @@ class CrossEntropyMetric(Metric):
         self.add_state("y_true", default=[], dist_reduce_fx="cat")
 
     def update(self, y_pred, y_true):
-        # y_pred: [batch_size, num_classes], y_true: [batch_size]
         self.y_pred.append(y_pred)
         self.y_true.append(y_true)
 
     def compute(self):
-        y_pred = torch.cat(self.y_pred)  # [total_samples, num_classes]
-        y_true = torch.cat(self.y_true)  # [total_samples]
+        y_pred = torch.cat(self.y_pred)
+        y_true = torch.cat(self.y_true)
         return F.cross_entropy(y_pred, y_true)
 
     def loss(self, y_pred, y_true):
-        class_weights = torch.tensor([2.0, 2.0, 0.5], device=y_pred.device)
+        class_weights = torch.tensor([1.0, 1.0, 1.3], device=y_pred.device)  # Adjusted for 38.9% no trade
         return F.cross_entropy(y_pred, y_true, weight=class_weights)
 
     def to_prediction(self, y_pred, **kwargs):
@@ -60,6 +75,7 @@ class CustomTFT(pl.LightningModule):
     def __init__(self, dataset, hidden_size, dropout, learning_rate, output_size=3, log_interval=50):
         super().__init__()
         self.save_hyperparameters(ignore=['dataset'])
+        self.dataset = dataset
         self.tft = TemporalFusionTransformer.from_dataset(
             dataset,
             hidden_size=hidden_size,
@@ -75,12 +91,20 @@ class CustomTFT(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()  # [batch_size]
-        y_hat = self(x)  # Output object
-        prediction = y_hat.prediction.squeeze(1)  # [batch_size, num_classes]
+        y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()
+        y_hat = self(x)
+        prediction = y_hat.prediction.squeeze(1)
         loss = self.tft.loss(prediction, y_true)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=BATCH_SIZE)
         return loss
+
+    def on_train_epoch_end(self):
+        epoch = self.current_epoch
+        train_loss = self.trainer.callback_metrics.get("train_loss", float("inf")).item()
+        val_loss = self.trainer.callback_metrics.get("val_loss", float("inf")).item()
+        msg = f"Window {self.trainer.window_index}, Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
+        print(msg)
+        send_telegram_message(msg)
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
@@ -97,22 +121,29 @@ class CustomTFT(pl.LightningModule):
         return [optimizer], [scheduler]
 
     @classmethod
-    def load_from_checkpoint(cls, checkpoint_path, **kwargs):
+    def load_from_checkpoint(cls, checkpoint_path, dataset=None, **kwargs):
         checkpoint = torch.load(checkpoint_path)
         hparams = checkpoint["hyper_parameters"]
-        model = cls(**hparams)
+        if dataset is None:
+            raise ValueError("Dataset must be provided to load the checkpoint.")
+        model = cls(dataset=dataset, **hparams)
         model.load_state_dict(checkpoint["state_dict"])
         return model
 
-# Function to create TimeSeriesDataSet
+# Dataset creation function
 def create_tsdataset(df):
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
     df["time_idx"] = df.index
     df["dummy_id"] = 0
     
-    known_reals = ["open", "high", "low", "close", "volume", "ma_5", "ma_15", "ma_30", "ma_60", "ma_120",
-                   "atr_14", "atr_60", "rsi_14", "adx", "hour_sin", "hour_cos", "min_sin", "min_cos",
-                   "dow_sin", "dow_cos", "market_regime", "volatility_spike", "price_diff_60"]
+    known_reals = [
+        "open", "high", "low", "close", "volume",
+        "ma_5", "ma_15", "ma_30", "ma_60", "ma_120",
+        "atr_14", "atr_60", "rsi_14", "adx",
+        "hour_sin", "hour_cos", "min_sin", "min_cos",
+        "dow_sin", "dow_cos", "market_regime",
+        "volatility_spike", "price_diff_60"
+    ]
     known_reals = [c for c in known_reals if c in df.columns]
     
     return TimeSeriesDataSet(
@@ -148,7 +179,7 @@ class ClassificationMetrics(nn.Module):
         }
 
 # PnL simulation function
-def simulate_pnl(df_rows, preds, tp_factor=0.005, sl_factor=0.002, fee=0.001):
+def simulate_pnl(df_rows, preds, tp_factor=0.004, sl_factor=0.002, fee=0.002):
     if "close" not in df_rows.columns:
         return {"total_pnl": None, "num_trades": 0, "avg_pnl_per_trade": None}
     closes = df_rows["close"].values
@@ -167,13 +198,13 @@ def simulate_pnl(df_rows, preds, tp_factor=0.005, sl_factor=0.002, fee=0.001):
             hit_tp = any(p >= tp_price for p in future_prices)
             hit_sl = any(p <= sl_price for p in future_prices)
             if hit_tp:
-                gain = (tp_price - entry_price) / entry_price - 2 * fee
+                gain = (tp_price - entry_price) / entry_price - fee
                 gains.append(gain)
             elif hit_sl:
-                gain = (sl_price - entry_price) / entry_price - 2 * fee
+                gain = (sl_price - entry_price) / entry_price - fee
                 gains.append(gain)
             else:
-                gains.append(-2 * fee)
+                gains.append(-fee)
             num_trades += 1
         elif pred == 0:  # Short
             tp_price = entry_price * (1 - tp_factor)
@@ -182,20 +213,20 @@ def simulate_pnl(df_rows, preds, tp_factor=0.005, sl_factor=0.002, fee=0.001):
             hit_tp = any(p <= tp_price for p in future_prices)
             hit_sl = any(p >= sl_price for p in future_prices)
             if hit_tp:
-                gain = (entry_price - tp_price) / entry_price - 2 * fee
+                gain = (entry_price - tp_price) / entry_price - fee
                 gains.append(gain)
             elif hit_sl:
-                gain = (entry_price - sl_price) / entry_price - 2 * fee
+                gain = (entry_price - sl_price) / entry_price - fee
                 gains.append(gain)
             else:
-                gains.append(-2 * fee)
+                gains.append(-fee)
             num_trades += 1
     
     total_pnl = sum(gains)
     avg_pnl = total_pnl / num_trades if num_trades > 0 else 0.0
     return {"total_pnl": total_pnl, "num_trades": num_trades, "avg_pnl_per_trade": avg_pnl}
 
-# Model evaluation function
+# Evaluation function
 def evaluate_model(model, df_test):
     if len(df_test) == 0:
         return {"acc": None, "precision": None, "recall": None, "f1": None,
@@ -210,7 +241,7 @@ def evaluate_model(model, df_test):
             x, y = batch
             y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()
             y_hat = model(x)
-            pred_tensor = y_hat.prediction.squeeze(1)  # [batch_size, num_classes]
+            pred_tensor = y_hat.prediction.squeeze(1)
             all_preds.append(pred_tensor)
             all_targets.append(y_true)
     y_pred_logits = torch.cat(all_preds, dim=0)
@@ -229,54 +260,85 @@ def evaluate_model(model, df_test):
         "avg_pnl_per_trade": pnl_stats["avg_pnl_per_trade"],
     }
 
-# Hyperparameter search for the first window
-def hyperparam_search_first_window(df_train, df_val, window_index, n_samples):
-    combos = [
-        {"hidden_size": hs, "dropout": dr, "learning_rate": lr}
-        for hs in HIDDEN_SIZE_OPTIONS
-        for dr in DROPOUT_OPTIONS
-        for lr in LEARNING_RATE_OPTIONS
-    ]
-    combos = combos[:n_samples] if n_samples < len(combos) else combos
-    best_val_loss = float("inf")
-    best_model = None
-    best_params = None
+# Optuna objective function for Window 0
+def objective(trial, df_train, df_val, window_index):
+    hidden_size = trial.suggest_int("hidden_size", HIDDEN_SIZE_MIN, HIDDEN_SIZE_MAX)
+    dropout = trial.suggest_float("dropout", DROPOUT_MIN, DROPOUT_MAX)
+    learning_rate = trial.suggest_float("learning_rate", LEARNING_RATE_MIN, LEARNING_RATE_MAX, log=True)
+    
     train_dataset = create_tsdataset(df_train)
     val_dataset = create_tsdataset(df_val)
     train_loader = train_dataset.to_dataloader(train=True, batch_size=BATCH_SIZE, num_workers=12)
     val_loader = val_dataset.to_dataloader(train=False, batch_size=BATCH_SIZE, num_workers=12)
-    for i, combo in enumerate(combos):
-        print(f"Window {window_index}, Combo {i+1}/{len(combos)}, {combo}")
-        tft = CustomTFT(
-            dataset=train_dataset,
-            hidden_size=combo["hidden_size"],
-            dropout=combo["dropout"],
-            learning_rate=combo["learning_rate"],
-            output_size=3,
-            log_interval=50
-        )
-        logger = TensorBoardLogger(save_dir="logs", name=f"window_{window_index}_combo_{i}")
-        ckpt_dir = os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_combo_{i}")
-        ckpt_cb = ModelCheckpoint(dirpath=ckpt_dir, filename="best-{epoch}-{val_loss:.4f}", monitor="val_loss", save_top_k=1, mode="min")
-        es_cb = EarlyStopping(monitor="val_loss", patience=3, mode="min")
-        trainer = pl.Trainer(
-            max_epochs=EPOCHS,
-            logger=logger,
-            callbacks=[ckpt_cb, es_cb],
-            accelerator="auto",
-            enable_progress_bar=True
-        )
-        trainer.fit(tft, train_loader, val_loader)
-        val_loss = trainer.callback_metrics.get("val_loss", float("inf")).item()
-        print(f"Combo {i+1}/{len(combos)}, val_loss={val_loss:.4f}")
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_params = combo
-            best_model = CustomTFT.load_from_checkpoint(ckpt_cb.best_model_path)
-    print(f"Best combo = {best_params}, val_loss={best_val_loss:.4f}")
+    
+    tft = CustomTFT(
+        dataset=train_dataset,
+        hidden_size=hidden_size,
+        dropout=dropout,
+        learning_rate=learning_rate,
+        output_size=3,
+        log_interval=50
+    )
+    
+    logger = TensorBoardLogger(save_dir="logs", name=f"window_{window_index}_trial_{trial.number}")
+    ckpt_dir = os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_trial_{trial.number}")
+    ckpt_cb = ModelCheckpoint(
+        dirpath=ckpt_dir,
+        filename="best-{epoch}-{val_loss:.4f}",
+        monitor="val_loss",
+        save_top_k=1,
+        mode="min"
+    )
+    es_cb = EarlyStopping(monitor="val_loss", patience=5, mode="min")
+    
+    trainer = pl.Trainer(
+        max_epochs=EPOCHS,
+        logger=logger,
+        callbacks=[ckpt_cb, es_cb],
+        accelerator="auto",
+        enable_progress_bar=True
+    )
+    trainer.window_index = window_index  # Custom attribute for notification
+    
+    trainer.fit(tft, train_loader, val_loader)
+    val_loss = trainer.callback_metrics.get("val_loss", float("inf")).item()
+    
+    # Send Telegram notification after trial
+    msg = f"Window 0, Trial {trial.number}: val_loss={val_loss:.4f}"
+    print(msg)
+    send_telegram_message(msg)
+    
+    return val_loss
+
+# Hyperparameter search for Window 0
+def hyperparam_search_first_window(df_train, df_val, window_index, n_trials):
+    study = optuna.create_study(direction="minimize")
+    study.optimize(lambda trial: objective(trial, df_train, df_val, window_index), n_trials=n_trials)
+    
+    best_trial = study.best_trial
+    best_params = best_trial.params
+    best_val_loss = best_trial.value
+    
+    train_dataset = create_tsdataset(df_train)
+    best_model = CustomTFT(
+        dataset=train_dataset,
+        hidden_size=best_params["hidden_size"],
+        dropout=best_params["dropout"],
+        learning_rate=best_params["learning_rate"],
+        output_size=3,
+        log_interval=50
+    )
+    best_ckpt_dir = os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_trial_{best_trial.number}")
+    best_ckpt_files = [f for f in os.listdir(best_ckpt_dir) if f.startswith("best-") and f.endswith(".ckpt")]
+    if not best_ckpt_files:
+        raise FileNotFoundError(f"No checkpoint found in {best_ckpt_dir}")
+    best_ckpt_path = os.path.join(best_ckpt_dir, best_ckpt_files[0])
+    best_model = CustomTFT.load_from_checkpoint(best_ckpt_path, dataset=train_dataset)
+    
+    print(f"Best params = {best_params}, val_loss={best_val_loss:.4f}")
     return best_model, best_params, best_val_loss
 
-# Fine-tuning function for subsequent windows
+# Fine-tuning for subsequent windows
 def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
     train_dataset = create_tsdataset(df_train)
     tft = CustomTFT(
@@ -295,8 +357,14 @@ def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
     train_loader = train_dataset.to_dataloader(train=True, batch_size=BATCH_SIZE, num_workers=12)
     val_loader = val_dataset.to_dataloader(train=False, batch_size=BATCH_SIZE, num_workers=12)
     logger = TensorBoardLogger(save_dir="logs", name=f"window_{window_index}_fine_tune")
-    ckpt_cb = ModelCheckpoint(dirpath=os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_fine_tune"), filename="best-{epoch}-{val_loss:.4f}", monitor="val_loss", save_top_k=1, mode="min")
-    es_cb = EarlyStopping(monitor="val_loss", patience=3, mode="min")
+    ckpt_cb = ModelCheckpoint(
+        dirpath=os.path.join(MODEL_SAVE_DIR, f"window_{window_index}_fine_tune"),
+        filename="best-{epoch}-{val_loss:.4f}",
+        monitor="val_loss",
+        save_top_k=1,
+        mode="min"
+    )
+    es_cb = EarlyStopping(monitor="val_loss", patience=5, mode="min")
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
         logger=logger,
@@ -304,14 +372,16 @@ def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
         accelerator="auto",
         enable_progress_bar=True
     )
+    trainer.window_index = window_index  # Custom attribute for notification
+    
     trainer.fit(tft, train_loader, val_loader)
     val_loss = trainer.callback_metrics.get("val_loss", float("inf")).item()
-    best_model = CustomTFT.load_from_checkpoint(ckpt_cb.best_model_path)
+    best_model = CustomTFT.load_from_checkpoint(ckpt_cb.best_model_path, dataset=train_dataset)
     return best_model, val_loss
 
 # Main execution function
 def main():
-    print("=== Stage 6: Walk-Forward Training for HFT (0.5% TP, 0.2% SL, 1-Hour Horizon) ===")
+    print("=== Stage 6: Walk-Forward Training with Optuna for HFT (0.4% Threshold, 1-Hour Horizon) ===")
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     results = []
     all_files = os.listdir(INPUT_DIR)
@@ -342,7 +412,7 @@ def main():
         
         print(f"\n=== Window {window_index} ===")
         if idx == 0:
-            best_model, best_hparams, best_val_loss = hyperparam_search_first_window(df_train, df_val, window_index, NUM_SAMPLES_WINDOW0)
+            best_model, best_hparams, best_val_loss = hyperparam_search_first_window(df_train, df_val, window_index, N_TRIALS_WINDOW0)
             if best_model is None:
                 print("No best model found, aborting.")
                 return
@@ -354,6 +424,13 @@ def main():
         
         test_metrics = evaluate_model(best_model, df_test)
         print(f"Window {window_index} => val_loss={best_val_loss:.4f}, test_metrics={test_metrics}")
+        
+        # Send Telegram notification after window
+        msg = (f"Window {window_index} completed: val_loss={best_val_loss:.4f}, "
+               f"acc={test_metrics['acc']:.4f}, total_pnl={test_metrics['total_pnl']:.4f}, "
+               f"num_trades={test_metrics['num_trades']}")
+        print(msg)
+        send_telegram_message(msg)
         
         row = {
             "window_index": window_index,
@@ -383,6 +460,9 @@ def main():
     df_results = pd.DataFrame(results)
     df_results.to_csv(OUTPUT_RESULTS, index=False)
     print(f"\nResults saved to {OUTPUT_RESULTS}")
+    msg = f"Training completed: Results saved to {OUTPUT_RESULTS}"
+    print(msg)
+    send_telegram_message(msg)
     print(df_results)
 
 if __name__ == "__main__":
