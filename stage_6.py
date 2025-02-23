@@ -14,6 +14,7 @@ from pytorch_forecasting.models.temporal_fusion_transformer import TemporalFusio
 from pytorch_forecasting.metrics import Metric
 import optuna
 import requests
+import json
 
 # Configuration constants
 INPUT_DIR = "data/walk_forward_splits_gap"
@@ -74,7 +75,7 @@ class CrossEntropyMetric(Metric):
 class CustomTFT(pl.LightningModule):
     def __init__(self, dataset, hidden_size, dropout, learning_rate, output_size=3, log_interval=50):
         super().__init__()
-        self.save_hyperparameters(ignore=['dataset'])
+        self.save_hyperparameters(ignore=['dataset', 'loss', 'logging_metrics'])  # Suppress attribute warnings
         self.dataset = dataset
         self.tft = TemporalFusionTransformer.from_dataset(
             dataset,
@@ -336,6 +337,11 @@ def hyperparam_search_first_window(df_train, df_val, window_index, n_trials):
     best_model = CustomTFT.load_from_checkpoint(best_ckpt_path, dataset=train_dataset)
     
     print(f"Best params = {best_params}, val_loss={best_val_loss:.4f}")
+    # Save best hyperparameters to JSON for Window 0
+    with open("best_hyperparameters_window_0.json", "w") as f:
+        json.dump({"window_0": best_params, "val_loss": best_val_loss}, f, indent=4)
+    send_telegram_message(f"Window 0 best params saved: {best_params}, val_loss={best_val_loss:.4f}")
+    
     return best_model, best_params, best_val_loss
 
 # Fine-tuning for subsequent windows
@@ -463,6 +469,18 @@ def main():
     msg = f"Training completed: Results saved to {OUTPUT_RESULTS}"
     print(msg)
     send_telegram_message(msg)
+    
+    # Save all windows' hyperparameters to JSON
+    hyperparams_dict = {f"window_{row['window_index']}": {
+        "hidden_size": row["hidden_size"],
+        "dropout": row["dropout"],
+        "learning_rate": row["lr"],
+        "val_loss": row["val_loss"]
+    } for _, row in df_results.iterrows()}
+    with open("best_hyperparameters_all_windows.json", "w") as f:
+        json.dump(hyperparams_dict, f, indent=4)
+    send_telegram_message("All windows' best hyperparameters saved to best_hyperparameters_all_windows.json")
+    
     print(df_results)
 
 if __name__ == "__main__":
