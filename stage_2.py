@@ -1,77 +1,69 @@
-# stage_2.py
 import pandas as pd
 import numpy as np
 import ta
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+# Configure logging
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+file_handler = RotatingFileHandler(
+    os.path.join(log_dir, "stage_2.log"),
+    maxBytes=1_000_000,  # 1MB
+    backupCount=5
+)
+file_handler.setLevel(logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+logger.handlers = []
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 CLEANED_DATA_PATH = "data/cleaned.csv"
 ENGINEERED_DATA_PATH = "data/engineered.csv"
 
 def add_technical_indicators(df):
-    print("Starting feature addition ✅")
-    # Moving Averages
+    logger.info("Starting feature addition ✅")
+    df["ma_1"] = df["close"].rolling(window=1).mean()
     df["ma_5"] = df["close"].rolling(window=5).mean()
     df["ma_15"] = df["close"].rolling(window=15).mean()
     df["ma_30"] = df["close"].rolling(window=30).mean()
-    df["ma_60"] = df["close"].rolling(window=60).mean()
-    df["ma_120"] = df["close"].rolling(window=120).mean()  # 6-hour MA
     
-    # MACD
     macd = ta.trend.MACD(close=df["close"], window_fast=12, window_slow=26, window_sign=9)
     df["macd"] = macd.macd()
     df["macd_signal"] = macd.macd_signal()
     
-    # Bollinger Bands
-    bb = ta.volatility.BollingerBands(close=df["close"], window=20, window_dev=2)
-    df["bb_high"] = bb.bollinger_hband()
-    df["bb_low"] = bb.bollinger_lband()
-    
-    # RSI
     df["rsi_14"] = ta.momentum.rsi(close=df["close"], window=14)
     
-    # Stochastic Oscillator
-    stoch = ta.momentum.StochasticOscillator(high=df["high"], low=df["low"], close=df["close"], window=14, smooth_window=3)
-    df["stoch_k"] = stoch.stoch()
-    
-    # ATR (for labeling and features)
+    df["atr_5"] = ta.volatility.average_true_range(high=df["high"], low=df["low"], close=df["close"], window=5)
     df["atr_14"] = ta.volatility.average_true_range(high=df["high"], low=df["low"], close=df["close"], window=14)
-    df["atr_60"] = ta.volatility.average_true_range(high=df["high"], low=df["low"], close=df["close"], window=60)
     
-    # ADX
     adx = ta.trend.ADXIndicator(high=df["high"], low=df["low"], close=df["close"], window=14)
     df["adx"] = adx.adx()
     
-    # ROC
-    df["roc_9"] = ta.momentum.roc(close=df["close"], window=9)
-    
-    # Price Momentum
     df["price_diff_1"] = df["close"].diff(1)
-    df["price_diff_60"] = df["close"].diff(60)  # 3-hour lag
+    df["price_diff_5"] = df["close"].diff(5)
     
-    # Volume Features
     df["vol_sum_5"] = df["volume"].rolling(window=5).sum()
-    df["vol_ratio_20"] = df["volume"] / df["volume"].rolling(window=20).mean()
+    df["vol_ratio_5"] = df["volume"] / df["volume"].rolling(window=5).mean()
     
-    # Volatility Spike
-    df["volatility_spike"] = (df["atr_14"] / df["atr_14"].rolling(window=60).mean()) > 1.5
+    df["volatility_ratio"] = df["atr_5"] / df["atr_14"]
     
-    # Additional Indicators
-    cci = ta.trend.CCIIndicator(high=df["high"], low=df["low"], close=df["close"], window=20)
-    df["cci_20"] = cci.cci()
-
-    willr = ta.momentum.WilliamsRIndicator(high=df["high"], low=df["low"], close=df["close"], lbp=14)
-    df["willr_14"] = willr.williams_r()
-
-    df["rsi_14_lag5"] = df["rsi_14"].shift(5)  # RSI from 15 minutes ago
-    
-    # Normalize numeric features
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    df[numeric_cols] = (df[numeric_cols] - df[numeric_cols].mean()) / df[numeric_cols].std()
-
-    print("Feature addition completed ✅")
+    logger.info("Feature addition completed ✅")
     return df
 
 def add_time_features(df):
-    print("Starting time feature addition ✅")
+    logger.info("Starting time feature addition ✅")
     df["hour"] = df["timestamp"].dt.hour
     df["minute"] = df["timestamp"].dt.minute
     df["dayofweek"] = df["timestamp"].dt.dayofweek
@@ -82,19 +74,19 @@ def add_time_features(df):
     df["min_cos"] = np.cos(2 * np.pi * df["minute"] / 60)
     df["dow_sin"] = np.sin(2 * np.pi * df["dayofweek"] / 7)
     df["dow_cos"] = np.cos(2 * np.pi * df["dayofweek"] / 7)
-    print("Time feature addition completed ✅")
+    logger.info("Time feature addition completed ✅")
     return df
 
 def tag_market_regime(df):
-    print("Adding market regime ✅")
+    logger.info("Adding market regime ✅")
     df["market_regime"] = (df["adx"] > 25).astype(int)
-    print("Market regime added ✅")
+    logger.info("Market regime added ✅")
     return df
 
 def main():
     df = pd.read_csv(CLEANED_DATA_PATH, parse_dates=["timestamp"])
-    print(f"Original dataset loaded: {df.shape[0]} rows")
-    df["volume"] = df["volume"].replace(0, 1e-8)  # Avoid division by zero
+    logger.info(f"Original dataset loaded: {df.shape[0]} rows")
+    df["volume"] = df["volume"].replace(0, 1e-8)
     df.ffill(inplace=True)
     df.dropna(inplace=True)
     
@@ -104,11 +96,11 @@ def main():
     
     initial_size = df.shape[0]
     df.dropna(inplace=True)
-    print(f"Rows dropped due to rolling indicators: {initial_size - df.shape[0]}")
-    print(f"Final dataset size: {df.shape[0]} rows")
+    logger.info(f"Rows dropped due to rolling indicators: {initial_size - df.shape[0]}")
+    logger.info(f"Final dataset size: {df.shape[0]} rows")
     
     df.to_csv(ENGINEERED_DATA_PATH, index=False)
-    print(f"[Stage 2] Engineered data saved to {ENGINEERED_DATA_PATH}")
+    logger.info(f"Engineered data saved to {ENGINEERED_DATA_PATH}")
 
 if __name__ == "__main__":
     main()
