@@ -1,0 +1,402 @@
+[
+    {
+        "trial_number": 0,
+        "params": {
+            "hidden_size": 169,
+            "dropout": 0.3901401470365273,
+            "learning_rate": 0.00656164525640139
+        },
+        "best_val_loss": 0.958785355091095,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_0/best-epoch=8-val_loss=0.9588.ckpt"
+    },
+    {
+        "trial_number": 1,
+        "params": {
+            "hidden_size": 219,
+            "dropout": 0.3674828792637501,
+            "learning_rate": 0.000453806586875922
+        },
+        "best_val_loss": 0.938662052154541,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_1/best-epoch=8-val_loss=0.9387.ckpt"
+    },
+    {
+        "trial_number": 2,
+        "params": {
+            "hidden_size": 133,
+            "dropout": 0.2386420098406099,
+            "learning_rate": 0.00014259096484951016
+        },
+        "best_val_loss": 1.0197293758392334,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_2/best-epoch=1-val_loss=1.0197.ckpt"
+    },
+    {
+        "trial_number": 3,
+        "params": {
+            "hidden_size": 203,
+            "dropout": 0.39403589999733796,
+            "learning_rate": 0.0014629836754017846
+        },
+        "best_val_loss": 0.9090622067451477,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_3/best-epoch=9-val_loss=0.9091.ckpt"
+    },
+    {
+        "trial_number": 4,
+        "params": {
+            "hidden_size": 142,
+            "dropout": 0.29279445927555575,
+            "learning_rate": 0.0009618392964704706
+        },
+        "best_val_loss": 0.9501782655715942,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_4/best-epoch=9-val_loss=0.9502.ckpt"
+    },
+    {
+        "trial_number": 5,
+        "params": {
+            "hidden_size": 140,
+            "dropout": 0.27414675544902334,
+            "learning_rate": 0.004376980745915078
+        },
+        "best_val_loss": 0.9737797975540161,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_5/best-epoch=8-val_loss=0.9738.ckpt"
+    },
+    {
+        "trial_number": 6,
+        "params": {
+            "hidden_size": 188,
+            "dropout": 0.2596185507304302,
+            "learning_rate": 0.0001217712464308033
+        },
+        "best_val_loss": 0.9625909924507141,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_6/best-epoch=9-val_loss=0.9626.ckpt"
+    },
+    {
+        "trial_number": 7,
+        "params": {
+            "hidden_size": 191,
+            "dropout": 0.31930517009615295,
+            "learning_rate": 0.008599228087452239
+        },
+        "best_val_loss": 1.024684190750122,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_7/best-epoch=1-val_loss=1.0247.ckpt"
+    },
+    {
+        "trial_number": 8,
+        "params": {
+            "hidden_size": 221,
+            "dropout": 0.3415525046506117,
+            "learning_rate": 0.0002924513418120412
+        },
+        "best_val_loss": 0.9315232038497925,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_8/best-epoch=9-val_loss=0.9315.ckpt"
+    },
+    {
+        "trial_number": 9,
+        "params": {
+            "hidden_size": 150,
+            "dropout": 0.23642454392371082,
+            "learning_rate": 0.0001609057455362918
+        },
+        "best_val_loss": 0.995118260383606,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_9/best-epoch=5-val_loss=0.9951.ckpt"
+    },
+    {
+        "trial_number": 10,
+        "params": {
+            "hidden_size": 246,
+            "dropout": 0.3999082423637753,
+            "learning_rate": 0.00257310121362059
+        },
+        "best_val_loss": 1.0163185596466064,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_10/best-epoch=1-val_loss=1.0163.ckpt"
+    },
+    {
+        "trial_number": 11,
+        "params": {
+            "hidden_size": 221,
+            "dropout": 0.3346858125813037,
+            "learning_rate": 0.00048133200102780903
+        },
+        "best_val_loss": 0.9292731285095215,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_11/best-epoch=9-val_loss=0.9293.ckpt"
+    },
+    {
+        "trial_number": 12,
+        "params": {
+            "hidden_size": 215,
+            "dropout": 0.34743375029042195,
+            "learning_rate": 0.0013681636104360955
+        },
+        "best_val_loss": 0.9314629435539246,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_12/best-epoch=9-val_loss=0.9315.ckpt"
+    },
+    {
+        "trial_number": 13,
+        "params": {
+            "hidden_size": 256,
+            "dropout": 0.2023875157319672,
+            "learning_rate": 0.0007535216116505865
+        },
+        "best_val_loss": 0.9462777972221375,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_13/best-epoch=9-val_loss=0.9463.ckpt"
+    },
+    {
+        "trial_number": 14,
+        "params": {
+            "hidden_size": 233,
+            "dropout": 0.36830130942288086,
+            "learning_rate": 0.0019402267902608652
+        },
+        "best_val_loss": 0.9068598747253418,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_14/best-epoch=9-val_loss=0.9069.ckpt"
+    },
+    {
+        "trial_number": 15,
+        "params": {
+            "hidden_size": 206,
+            "dropout": 0.3692556691651841,
+            "learning_rate": 0.0020973364359251293
+        },
+        "best_val_loss": 1.017512559890747,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_15/best-epoch=0-val_loss=1.0175.ckpt"
+    },
+    {
+        "trial_number": 16,
+        "params": {
+            "hidden_size": 234,
+            "dropout": 0.3727538851377155,
+            "learning_rate": 0.0026991487512312033
+        },
+        "best_val_loss": 0.9239238500595093,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_16/best-epoch=6-val_loss=0.9239.ckpt"
+    },
+    {
+        "trial_number": 17,
+        "params": {
+            "hidden_size": 180,
+            "dropout": 0.3129055269767553,
+            "learning_rate": 0.0013808110034499723
+        },
+        "best_val_loss": 0.9113675355911255,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_17/best-epoch=8-val_loss=0.9114.ckpt"
+    },
+    {
+        "trial_number": 18,
+        "params": {
+            "hidden_size": 200,
+            "dropout": 0.383281335944293,
+            "learning_rate": 0.0045926076290991455
+        },
+        "best_val_loss": 0.9073508381843567,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_18/best-epoch=8-val_loss=0.9074.ckpt"
+    },
+    {
+        "trial_number": 19,
+        "params": {
+            "hidden_size": 236,
+            "dropout": 0.35684734750525,
+            "learning_rate": 0.004552662711437673
+        },
+        "best_val_loss": 0.9228112101554871,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_19/best-epoch=9-val_loss=0.9228.ckpt"
+    },
+    {
+        "trial_number": 20,
+        "params": {
+            "hidden_size": 166,
+            "dropout": 0.3260291484434166,
+            "learning_rate": 0.004234209944016411
+        },
+        "best_val_loss": 0.9046666026115417,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_20/best-epoch=9-val_loss=0.9047.ckpt"
+    },
+    {
+        "trial_number": 21,
+        "params": {
+            "hidden_size": 165,
+            "dropout": 0.32561481938867703,
+            "learning_rate": 0.00440234160552261
+        },
+        "best_val_loss": 1.0160939693450928,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_21/best-epoch=2-val_loss=1.0161.ckpt"
+    },
+    {
+        "trial_number": 22,
+        "params": {
+            "hidden_size": 163,
+            "dropout": 0.2995311203746251,
+            "learning_rate": 0.009282708822874925
+        },
+        "best_val_loss": 0.9176823496818542,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_22/best-epoch=8-val_loss=0.9177.ckpt"
+    },
+    {
+        "trial_number": 23,
+        "params": {
+            "hidden_size": 178,
+            "dropout": 0.38210490556386123,
+            "learning_rate": 0.003494937974732756
+        },
+        "best_val_loss": 0.967141330242157,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_23/best-epoch=9-val_loss=0.9671.ckpt"
+    },
+    {
+        "trial_number": 24,
+        "params": {
+            "hidden_size": 206,
+            "dropout": 0.3564430975367621,
+            "learning_rate": 0.0021658568245933652
+        },
+        "best_val_loss": 0.9335377812385559,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_24/best-epoch=9-val_loss=0.9335.ckpt"
+    },
+    {
+        "trial_number": 25,
+        "params": {
+            "hidden_size": 154,
+            "dropout": 0.3797576904274597,
+            "learning_rate": 0.006613753426884522
+        },
+        "best_val_loss": 0.9196837544441223,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_25/best-epoch=7-val_loss=0.9197.ckpt"
+    },
+    {
+        "trial_number": 26,
+        "params": {
+            "hidden_size": 234,
+            "dropout": 0.3522947953587394,
+            "learning_rate": 0.0031847741128603964
+        },
+        "best_val_loss": 0.9264577031135559,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_26/best-epoch=9-val_loss=0.9265.ckpt"
+    },
+    {
+        "trial_number": 27,
+        "params": {
+            "hidden_size": 199,
+            "dropout": 0.33137719145577854,
+            "learning_rate": 0.006110671728685103
+        },
+        "best_val_loss": 1.0137150287628174,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_27/best-epoch=4-val_loss=1.0137.ckpt"
+    },
+    {
+        "trial_number": 28,
+        "params": {
+            "hidden_size": 178,
+            "dropout": 0.3054946382455636,
+            "learning_rate": 0.0018533133051852053
+        },
+        "best_val_loss": 0.8953984379768372,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_28/best-epoch=9-val_loss=0.8954.ckpt"
+    },
+    {
+        "trial_number": 29,
+        "params": {
+            "hidden_size": 176,
+            "dropout": 0.2920142303849414,
+            "learning_rate": 0.0016888780227260044
+        },
+        "best_val_loss": 0.9187681078910828,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_29/best-epoch=9-val_loss=0.9188.ckpt"
+    },
+    {
+        "trial_number": 30,
+        "params": {
+            "hidden_size": 158,
+            "dropout": 0.31034056535122523,
+            "learning_rate": 0.0006473139583797391
+        },
+        "best_val_loss": 0.9781152606010437,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_30/best-epoch=8-val_loss=0.9781.ckpt"
+    },
+    {
+        "trial_number": 31,
+        "params": {
+            "hidden_size": 172,
+            "dropout": 0.2792367061842172,
+            "learning_rate": 0.002117710258024754
+        },
+        "best_val_loss": 0.9219614863395691,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_31/best-epoch=8-val_loss=0.9220.ckpt"
+    },
+    {
+        "trial_number": 32,
+        "params": {
+            "hidden_size": 185,
+            "dropout": 0.38599037071770204,
+            "learning_rate": 0.006383726349393845
+        },
+        "best_val_loss": 1.0166561603546143,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_32/best-epoch=2-val_loss=1.0167.ckpt"
+    },
+    {
+        "trial_number": 33,
+        "params": {
+            "hidden_size": 194,
+            "dropout": 0.36392624769887916,
+            "learning_rate": 0.0034811180189426834
+        },
+        "best_val_loss": 0.9074240922927856,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_33/best-epoch=6-val_loss=0.9074.ckpt"
+    },
+    {
+        "trial_number": 34,
+        "params": {
+            "hidden_size": 168,
+            "dropout": 0.33796329261099184,
+            "learning_rate": 0.0010194225608847383
+        },
+        "best_val_loss": 0.9151798486709595,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_34/best-epoch=9-val_loss=0.9152.ckpt"
+    },
+    {
+        "trial_number": 35,
+        "params": {
+            "hidden_size": 211,
+            "dropout": 0.3107931798159928,
+            "learning_rate": 0.005430655491504012
+        },
+        "best_val_loss": 0.9085297584533691,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_35/best-epoch=8-val_loss=0.9085.ckpt"
+    },
+    {
+        "trial_number": 36,
+        "params": {
+            "hidden_size": 198,
+            "dropout": 0.28036825695905726,
+            "learning_rate": 0.0011311108697765328
+        },
+        "best_val_loss": 0.9324606657028198,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_36/best-epoch=8-val_loss=0.9325.ckpt"
+    },
+    {
+        "trial_number": 37,
+        "params": {
+            "hidden_size": 227,
+            "dropout": 0.2613334196054728,
+            "learning_rate": 0.0017413132592447131
+        },
+        "best_val_loss": 0.93504798412323,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_37/best-epoch=8-val_loss=0.9350.ckpt"
+    },
+    {
+        "trial_number": 38,
+        "params": {
+            "hidden_size": 143,
+            "dropout": 0.3881144621721865,
+            "learning_rate": 0.002715432738660177
+        },
+        "best_val_loss": 1.01366126537323,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_38/best-epoch=2-val_loss=1.0137.ckpt"
+    },
+    {
+        "trial_number": 39,
+        "params": {
+            "hidden_size": 247,
+            "dropout": 0.3660565071463933,
+            "learning_rate": 0.007594841803669762
+        },
+        "best_val_loss": 0.9095568656921387,
+        "checkpoint_path": "/home/octoadmin/tft-bot/models/walk_forward_transfer_optuna/window_0_trial_39/best-epoch=9-val_loss=0.9096.ckpt"
+    }
+]

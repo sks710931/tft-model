@@ -17,14 +17,11 @@ file_handler = RotatingFileHandler(
     backupCount=5
 )
 file_handler.setLevel(logging.INFO)
-
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
-
 logger.handlers = []
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
@@ -32,69 +29,87 @@ logger.addHandler(console_handler)
 ENGINEERED_DATA_PATH = "data/engineered.csv"
 LABELED_DATA_PATH = "data/labeled_dynamic.csv"
 
-FUTURE_HORIZON = 15   # 45 minutes (increased from 10)
+FUTURE_HORIZON = 15   # 45 minutes
 ENTRY_FEE = 0.001     # 0.1%
 EXIT_FEE = 0.001      # 0.1%
 TOTAL_FEE = ENTRY_FEE + EXIT_FEE  # 0.2%
-MIN_PROFIT = 0.002    # 0.2% minimum profit
+MIN_PROFIT = 0.001    # 0.1% profit to boost trades
+FIXED_THRESHOLD = MIN_PROFIT + TOTAL_FEE  # 0.3%
+TARGET_TRADE_PCT = 0.50  # 50% trades
 
-def calibrate_threshold(df, closes, target_trade_pct=0.25):
-    """Calibrate threshold to achieve ~50% trade labels, ensuring 0.2% profit."""
-    movements = []
+def label_with_fixed_threshold(closes):
+    """Label using a fixed profit threshold."""
+    labels = np.full(len(closes), fill_value=2, dtype=int)
+    
     for i in range(len(closes) - FUTURE_HORIZON):
         entry_price = closes[i]
         future_window = closes[i+1:i+1+FUTURE_HORIZON]
-        if future_window.size > 0:
-            up_move = max((p / entry_price - 1) for p in future_window)
-            down_move = max((1 - p / entry_price) for p in future_window)
-            movements.extend([up_move, down_move])
+        if len(future_window) == 0:
+            continue
+        
+        max_up = max((p / entry_price - 1) - TOTAL_FEE for p in future_window)
+        max_down = max((1 - p / entry_price) - TOTAL_FEE for p in future_window)
+        
+        if max_up >= FIXED_THRESHOLD:
+            labels[i] = 1  # Long
+        elif max_down >= FIXED_THRESHOLD:
+            labels[i] = 0  # Short
     
-    movements = np.array(movements)
-    valid_movements = movements[movements > TOTAL_FEE + MIN_PROFIT]  # Filter moves that meet profit requirement
-    if len(valid_movements) == 0:
-        logger.warning("No movements exceed minimum profit requirement. Using fallback threshold.")
-        return TOTAL_FEE + MIN_PROFIT
+    return labels
+
+def balance_labels(df, labels, closes, target_trade_pct=TARGET_TRADE_PCT):
+    """Adjust labels to hit 50% trade percentage."""
+    total_rows = len(df) - FUTURE_HORIZON
+    target_trades = int(total_rows * target_trade_pct)
+    current_trades = sum(1 for label in labels if label != 2)
     
-    # Target 25th percentile to get ~50% trades after directionality
-    threshold = np.percentile(valid_movements, target_trade_pct * 100)
-    logger.info(f"Calibrated threshold: {threshold:.4f} to achieve ~{target_trade_pct*100}% potential trades")
-    return threshold
+    if current_trades < target_trades:
+        shortfall = target_trades - current_trades
+        no_trade_idx = [i for i in range(len(labels) - FUTURE_HORIZON) if labels[i] == 2]
+        if no_trade_idx:
+            candidates = sorted(
+                [(i, max(max((closes[j] / closes[i] - 1) - TOTAL_FEE, 0) for j in range(i+1, i+1+FUTURE_HORIZON)) +
+                      max(max((1 - closes[j] / closes[i]) - TOTAL_FEE, 0) for j in range(i+1, i+1+FUTURE_HORIZON)))
+                 for i in no_trade_idx],
+                key=lambda x: x[1],
+                reverse=True
+            )
+            for i, _ in candidates[:shortfall]:
+                max_up = max((closes[j] / closes[i] - 1) - TOTAL_FEE for j in range(i+1, i+1+FUTURE_HORIZON))
+                max_down = max((1 - closes[j] / closes[i]) - TOTAL_FEE for j in range(i+1, i+1+FUTURE_HORIZON))
+                if max_up >= MIN_PROFIT:
+                    labels[i] = 1
+                elif max_down >= MIN_PROFIT:
+                    labels[i] = 0
+                else:
+                    labels[i] = 1 if max_up > max_down else 0  # Fallback to hit 50%
+    
+    return labels
 
 def main():
-    logger.info("=== Stage 3: Labeling for Near-HFT (Volatility-Adjusted, 45-Min Horizon, 0.2% Fees, 0.2% Min Profit) ===")
+    logger.info("=== Stage 3: Labeling for Near-HFT (Fixed Threshold 0.3%, 50% Trades, 45-Min Horizon, 0.2% Fees, 0.1% Min Profit) ===")
     
     df = pd.read_csv(ENGINEERED_DATA_PATH, parse_dates=["timestamp"])
     initial_rows = len(df)
     logger.info(f"Initial dataset size: {initial_rows} rows")
     
     closes = df["close"].values
-    atr_5 = df["atr_5"].values
-    labels = np.full(len(df), fill_value=2, dtype=int)
+    dates = df["timestamp"].dt.date.values
     
-    # Calibrate threshold
-    dynamic_threshold = calibrate_threshold(df, closes, target_trade_pct=0.25)
+    # Initial labeling
+    labels = label_with_fixed_threshold(closes)
     
-    for i in range(len(df) - FUTURE_HORIZON):
-        entry_price = closes[i]
-        volatility_factor = atr_5[i] / atr_5.mean()
-        movement_threshold = dynamic_threshold * max(0.5, min(2.0, volatility_factor))
-        future_window = closes[i+1:i+1+FUTURE_HORIZON]
-        
-        if len(future_window) == 0:
-            continue
-        
-        for price in future_window:
-            up_movement = (price / entry_price - 1) - TOTAL_FEE
-            down_movement = (1 - price / entry_price) - TOTAL_FEE
-            if up_movement >= movement_threshold - TOTAL_FEE:
-                labels[i] = 1
-                break
-            elif down_movement >= movement_threshold - TOTAL_FEE:
-                labels[i] = 0
-                break
+    # Balance to 50% trades
+    labels = balance_labels(df, labels, closes)
     
     df["label"] = labels
     df = df.iloc[:-FUTURE_HORIZON].copy()
+    
+    # Log daily trade stats with explicit float conversion
+    df["date"] = df["timestamp"].dt.date
+    daily_trades = df[df["label"] != 2].groupby("date").size()
+    logger.info(f"Daily trades - Mean: {float(daily_trades.mean()):.1f}, Median: {float(daily_trades.median()):.1f}, "
+                f"Min: {float(daily_trades.min()):.1f}, Max: {float(daily_trades.max()):.1f}")
     
     label_counts = Counter(df["label"])
     total_labels = sum(label_counts.values())
@@ -107,6 +122,7 @@ def main():
     logger.info(f"Final dataset rows: {final_rows}")
     logger.info(f"% Data lost: {100 * (initial_rows - final_rows) / initial_rows:.2f}%")
     
+    df.drop(columns=["date"], inplace=True)
     df.to_csv(LABELED_DATA_PATH, index=False)
     logger.info(f"Labeled data saved to {LABELED_DATA_PATH}")
 

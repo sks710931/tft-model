@@ -29,14 +29,11 @@ file_handler = RotatingFileHandler(
     backupCount=5
 )
 file_handler.setLevel(logging.INFO)
-
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
-
 logger.handlers = []
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
@@ -50,19 +47,19 @@ MODEL_SAVE_DIR = "models/walk_forward_transfer_optuna"
 TELEGRAM_BOT_TOKEN = "8179267789:AAFzP6zeQWtPhPfhekTStzqXtW3MIXebPDY"
 TELEGRAM_CHAT_ID = "1159940939"
 
-HIDDEN_SIZE_MIN, HIDDEN_SIZE_MAX = 32, 128
-DROPOUT_MIN, DROPOUT_MAX = 0.15, 0.35
-LEARNING_RATE_MIN, LEARNING_RATE_MAX = 1e-4, 1e-2
+HIDDEN_SIZE_MIN, HIDDEN_SIZE_MAX = 128, 256
+DROPOUT_MIN, DROPOUT_MAX = 0.2, 0.4
+LEARNING_RATE_MIN, LEARNING_RATE_MAX = 5e-4, 1e-2  # Tightened min from 1e-4 to 5e-4
 MAX_ENCODER_LENGTH = 15
 MAX_PREDICTION_LENGTH = 1
-BATCH_SIZE = 512
+BATCH_SIZE = 128
 EPOCHS = 10
-N_TRIALS_WINDOW0 = 20
+N_TRIALS_WINDOW0 = 40
 MIN_TRAIN_SIZE = 6000
 MIN_VAL_SIZE = 2000
 MIN_TEST_SIZE = 2000
-DYNAMIC_THRESHOLD = 0.0051  # From Stage 3
-MIN_PROFIT = 0.002  # Enforce 0.2% profit
+TOTAL_FEE = 0.002  # 0.2%
+MIN_PROFIT = 0.002  # 0.2%
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -78,30 +75,55 @@ class CrossEntropyMetric(Metric):
         super().__init__()
         self.add_state("y_pred", default=[], dist_reduce_fx="cat")
         self.add_state("y_true", default=[], dist_reduce_fx="cat")
-        self.add_state("atr_5", default=[], dist_reduce_fx="cat")
+        self.add_state("atr_3", default=[], dist_reduce_fx="cat")
+        self.add_state("profit_weight", default=[], dist_reduce_fx="cat")
+        self.trade_cost_base = 0.002  # Aligned with TOTAL_FEE
 
-    def update(self, y_pred, y_true, atr_5=None):
+    def update(self, y_pred, y_true, atr_3=None, profit_weight=None):
         self.y_pred.append(y_pred)
         self.y_true.append(y_true)
-        if atr_5 is not None:
-            self.atr_5.append(atr_5)
+        if atr_3 is not None:
+            self.atr_3.append(atr_3)
+        if profit_weight is not None:
+            self.profit_weight.append(profit_weight)
 
     def compute(self):
         y_pred = torch.cat(self.y_pred)
         y_true = torch.cat(self.y_true)
         return F.cross_entropy(y_pred, y_true)
 
-    def loss(self, y_pred, y_true, atr_5=None):
-        base_weights = torch.tensor([1.0, 1.0, 2.0], device=y_pred.device)  # Stronger "no trade" bias
-        if atr_5 is not None and len(self.atr_5) > 0:
-            atr_batch = torch.cat(self.atr_5[-len(y_true):])
-            volatility_factor = (atr_5 - atr_5.min()) / (atr_5.max() - atr_5.min() + 1e-8)
+    def loss(self, y_pred, y_true, atr_3=None, profit_weight=None):
+        base_weights = torch.tensor([1.0, 1.0, 1.0], device=y_pred.device)
+        trade_cost = self.trade_cost_base
+        
+        if atr_3 is not None and len(self.atr_3) > 0:
+            atr_batch = torch.cat(self.atr_3[-len(y_true):])
+            volatility_factor = (atr_3 - atr_3.min()) / (atr_3.max() - atr_3.min() + 1e-8)
             weights = base_weights.clone()
             weights[0] *= (1 + volatility_factor.mean())
             weights[1] *= (1 + volatility_factor.mean())
             weights[2] *= (1 - volatility_factor.mean() * 0.3)
-            return F.cross_entropy(y_pred, y_true, weight=weights)
-        return F.cross_entropy(y_pred, y_true, weight=base_weights)
+            # Optional: Dynamic trade cost (uncomment to enable)
+            # trade_cost = self.trade_cost_base * torch.clamp(volatility_factor.mean(), 0.5, 2.0)
+        else:
+            weights = base_weights
+        
+        if profit_weight is not None and len(self.profit_weight) > 0:
+            profit_weight_batch = torch.cat(self.profit_weight[-len(y_true):])
+            ce_loss = F.cross_entropy(y_pred, y_true, weight=weights, reduction="none")
+            weighted_ce_loss = (ce_loss * profit_weight_batch).mean()
+        else:
+            weighted_ce_loss = F.cross_entropy(y_pred, y_true, weight=weights)
+        
+        trade_penalty = trade_cost * (y_pred[:, 0] + y_pred[:, 1]).mean()  # Changed to .mean() for per-sample scale
+        total_loss = weighted_ce_loss + trade_penalty
+        
+        # Log penalty contribution
+        if torch.distributed.is_initialized() or not hasattr(self, 'logged_penalty'):
+            logger.debug(f"Trade penalty: {trade_penalty.item():.6f}, CE loss: {weighted_ce_loss.item():.4f}")
+            self.logged_penalty = True
+        
+        return total_loss
 
     def to_prediction(self, y_pred, **kwargs):
         return torch.argmax(y_pred, dim=-1)
@@ -117,7 +139,9 @@ class CustomTFT(pl.LightningModule):
             dropout=dropout,
             output_size=output_size,
             loss=CrossEntropyMetric(),
-            log_interval=log_interval
+            log_interval=log_interval,
+            attention_head_size=4,
+            hidden_continuous_size=16
         )
         self.learning_rate = learning_rate
 
@@ -127,10 +151,11 @@ class CustomTFT(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()
-        atr_5 = x["encoder_cont"][:, :, self.dataset.reals.index("atr_5")].squeeze(-1)[:, -1]
+        atr_3 = x["encoder_cont"][:, :, self.dataset.reals.index("atr_3")].squeeze(-1)[:, -1]
+        profit_weight = x["encoder_cont"][:, :, self.dataset.reals.index("profit_weight")].squeeze(-1)[:, -1]
         y_hat = self(x)
         prediction = y_hat.prediction.squeeze(1)
-        loss = self.tft.loss(prediction, y_true, atr_5=atr_5)
+        loss = self.tft.loss(prediction, y_true, atr_3=atr_3, profit_weight=profit_weight)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=BATCH_SIZE)
         return loss
 
@@ -161,10 +186,11 @@ class CustomTFT(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_true = y[0].squeeze() if isinstance(y, tuple) else y.squeeze()
-        atr_5 = x["encoder_cont"][:, :, self.dataset.reals.index("atr_5")].squeeze(-1)[:, -1]
+        atr_3 = x["encoder_cont"][:, :, self.dataset.reals.index("atr_3")].squeeze(-1)[:, -1]
+        profit_weight = x["encoder_cont"][:, :, self.dataset.reals.index("profit_weight")].squeeze(-1)[:, -1]
         y_hat = self(x)
         prediction = y_hat.prediction.squeeze(1)
-        loss = self.tft.loss(prediction, y_true, atr_5=atr_5)
+        loss = self.tft.loss(prediction, y_true, atr_3=atr_3, profit_weight=profit_weight)
         preds = torch.argmax(prediction, dim=-1)
         num_trades = (preds != 2).sum().item()
         self.log("val_loss", loss, on_epoch=True, prog_bar=True, batch_size=BATCH_SIZE)
@@ -173,8 +199,8 @@ class CustomTFT(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.8)
-        return [optimizer], [scheduler]
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "monitor": "val_loss"}}
 
     @classmethod
     def load_from_checkpoint(cls, checkpoint_path, dataset=None, **kwargs):
@@ -190,14 +216,16 @@ def create_tsdataset(df):
     df = df.copy().sort_values("timestamp").reset_index(drop=True)
     df["time_idx"] = df.index
     df["dummy_id"] = 0
+    df["profit_weight"] = (df["profit"] >= MIN_PROFIT).astype(float) + 0.5
     
     known_reals = [
         "open", "high", "low", "close", "volume",
-        "ma_1", "ma_5", "ma_15", "ma_30",
-        "atr_5", "atr_14", "rsi_14", "adx",
+        "ma_3", "ma_5", "ma_15", "ma_30",
+        "atr_3", "atr_10", "rsi_7", "rsi_14",
+        "macd", "vol_change", "hl_spread", "oc_imbalance",
         "hour_sin", "hour_cos", "min_sin", "min_cos",
-        "dow_sin", "dow_cos", "market_regime",
-        "volatility_ratio", "price_diff_5"
+        "dow_sin", "dow_cos", "regime_trend",
+        "profit_weight"
     ]
     known_reals = [c for c in known_reals if c in df.columns]
     
@@ -232,41 +260,63 @@ class ClassificationMetrics(nn.Module):
             "f1": self.f1(preds, y_true).item()
         }
 
-def simulate_pnl(df_rows, preds, fee=0.002):
+def simulate_pnl(df_rows, preds, fee=TOTAL_FEE):
     if "close" not in df_rows.columns:
         return {"total_pnl": None, "num_trades": 0, "avg_pnl_per_trade": None}
     closes = df_rows["close"].values
-    atr_5 = df_rows["atr_5"].values
+    atr_3 = df_rows["atr_3"].values
+    timestamps = df_rows["timestamp"].values
     gains = []
     num_trades = 0
+    trade_log = []
     
     for i, pred in enumerate(preds):
         if i >= len(closes) - 1 or pred == 2:
             gains.append(0.0)
             continue
         entry_price = closes[i]
-        volatility_factor = atr_5[i] / atr_5.mean()
-        threshold = max(DYNAMIC_THRESHOLD * max(0.5, min(2.0, volatility_factor)), fee + MIN_PROFIT)
-        future_prices = closes[i+1:min(i+16, len(closes))]
-        if pred == 1:
-            if any((p / entry_price - 1) - fee >= threshold - fee for p in future_prices):
-                net_gain = max((p / entry_price - 1) - fee for p in future_prices)
+        exit_price = closes[i + 1]
+        volatility_factor = atr_3[i] / atr_3.mean()
+        threshold = max(0.003 * max(0.5, min(2.0, volatility_factor)), fee + MIN_PROFIT)
+        
+        if pred == 1:  # Buy
+            net_gain = (exit_price / entry_price - 1) - fee
+            if net_gain >= threshold:
                 gains.append(net_gain)
-                num_trades += 1
             else:
                 gains.append(-fee)
-                num_trades += 1
-        elif pred == 0:
-            if any((1 - p / entry_price) - fee >= threshold - fee for p in future_prices):
-                net_gain = max((1 - p / entry_price) - fee for p in future_prices)
+            num_trades += 1
+            trade_log.append({
+                "timestamp": timestamps[i].isoformat(),
+                "action": "buy",
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "net_gain": gains[-1]
+            })
+        elif pred == 0:  # Sell
+            net_gain = (1 - exit_price / entry_price) - fee
+            if net_gain >= threshold:
                 gains.append(net_gain)
-                num_trades += 1
             else:
                 gains.append(-fee)
-                num_trades += 1
+            num_trades += 1
+            trade_log.append({
+                "timestamp": timestamps[i].isoformat(),
+                "action": "sell",
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "net_gain": gains[-1]
+            })
     
     total_pnl = sum(gains)
     avg_pnl = total_pnl / num_trades if num_trades > 0 else 0.0
+    
+    # Save trade log
+    trade_log_file = f"data/trade_logs/window_{df_rows['window_index'].iloc[0]}_trades.json" if 'window_index' in df_rows else "data/trade_logs/latest_trades.json"
+    os.makedirs(os.path.dirname(trade_log_file), exist_ok=True)
+    with open(trade_log_file, "w") as f:
+        json.dump(trade_log, f, indent=4)
+    
     return {"total_pnl": total_pnl, "num_trades": num_trades, "avg_pnl_per_trade": avg_pnl}
 
 def evaluate_model(model, df_test):
@@ -291,6 +341,7 @@ def evaluate_model(model, df_test):
     cls_stats = metrics_fn(y_pred_logits, y_true)
     preds = torch.argmax(y_pred_logits, dim=-1).cpu().numpy()
     df_test_rows = df_test.iloc[-len(preds):].copy()
+    df_test_rows['window_index'] = getattr(model.trainer, "window_index", "unknown")  # Add window index for logging
     pnl_stats = simulate_pnl(df_test_rows, preds)
     return {
         "acc": cls_stats["acc"],
@@ -331,7 +382,7 @@ def objective(trial, df_train, df_val, window_index):
         save_top_k=1,
         mode="min"
     )
-    es_cb = EarlyStopping(monitor="val_loss", patience=3, mode="min")
+    es_cb = EarlyStopping(monitor="val_loss", patience=5, mode="min")
     
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
@@ -346,8 +397,8 @@ def objective(trial, df_train, df_val, window_index):
     trainer.fit(tft, train_loader, val_loader)
     best_val_loss = ckpt_cb.best_model_score.item()
     
-    logger.info(f"Window 0, Trial {trial.number}: best_val_loss={best_val_loss:.4f} (from checkpoint)")
-    send_telegram_message(f"Window 0, Trial {trial.number}: best_val_loss={best_val_loss:.4f} (from checkpoint)")
+    logger.info(f"Window {window_index}, Trial {trial.number}: best_val_loss={best_val_loss:.4f}")
+    send_telegram_message(f"Window {window_index}, Trial {trial.number}: best_val_loss={best_val_loss:.4f}")
     
     trial_data = {
         "trial_number": trial.number,
@@ -436,7 +487,7 @@ def fine_tune_model(prev_model, df_train, df_val, hyperparams, window_index):
     return best_model, best_val_loss
 
 def main():
-    logger.info("=== Stage 6: Walk-Forward Training with Optuna (Near-HFT, 45-Min Horizon, 200-300 Trades/Day, 0.2% Min Profit) ===")
+    logger.info(f"Stage 6: Walk-Forward Training with Optuna, BATCH_SIZE={BATCH_SIZE}, trade_cost={CrossEntropyMetric().trade_cost_base}")
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     results = []
     all_files = os.listdir(INPUT_DIR)
@@ -445,7 +496,6 @@ def main():
     prev_model = None
     prev_hparams = None
     
-    # Load existing results and last model
     if os.path.exists(OUTPUT_RESULTS):
         with open(OUTPUT_RESULTS, "r") as f:
             results = json.load(f)
@@ -512,6 +562,9 @@ def main():
             best_model, best_val_loss = fine_tune_model(prev_model, df_train, df_val, prev_hparams, window_index)
             prev_model = best_model
         
+        trainer = pl.Trainer()  # Temp trainer to attach window_index for evaluate_model
+        trainer.window_index = window_index
+        best_model.trainer = trainer  # Attach trainer to model for window_index access
         test_metrics = evaluate_model(best_model, df_test)
         logger.info(f"Window {window_index} => val_loss={best_val_loss:.4f}, test_metrics={test_metrics}")
         
